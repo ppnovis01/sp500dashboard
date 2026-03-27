@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>S&P 500 Dashboard</title>
+    <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <h1>S&P 500 Analysis Dashboard</h1>
+            <div class="header-actions">
+                <span id="data-status" class="status-badge">--</span>
+                <span id="last-updated" class="last-updated"></span>
+                <button id="refresh-btn" onclick="refreshAllData()">
+                    <span class="refresh-icon">&#x21bb;</span> Atualizar Dados
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <nav class="tabs">
+        <button class="tab active" data-tab="indices" onclick="switchTab('indices')">Index Comparison</button>
+        <button class="tab" data-tab="mag7" onclick="switchTab('mag7')">Mag7 Analysis</button>
+        <button class="tab" data-tab="sectors" onclick="switchTab('sectors')">Sector ETFs</button>
+        <button class="tab" data-tab="fundamentals" onclick="switchTab('fundamentals')">Fundamentals</button>
+        <button class="tab" data-tab="valuation" onclick="switchTab('valuation')">Valuation Metrics</button>
+    </nav>
+
+    <main>
+        <div class="controls">
+            <label>Periodo:
+                <select id="period-select" onchange="onPeriodChange()">
+                    <option value="1y">1 Ano</option>
+                    <option value="2y">2 Anos</option>
+                    <option value="3y">3 Anos</option>
+                    <option value="5y" selected>5 Anos</option>
+                    <option value="10y">10 Anos</option>
+                </select>
+            </label>
+        </div>
+
+        <!-- Tab: Index Comparison -->
+        <section id="tab-indices" class="tab-content active">
+            <h2>S&P 500 vs Equal Weight vs S&P 493 vs Mag7</h2>
+            <div id="chart-indices" class="chart-container"></div>
+            <div id="table-indices-returns" class="table-container"></div>
+        </section>
+
+        <!-- Tab: Mag7 -->
+        <section id="tab-mag7" class="tab-content">
+            <h2>Magnificent 7 - Performance Individual</h2>
+            <div id="chart-mag7" class="chart-container"></div>
+            <div id="table-mag7-returns" class="table-container"></div>
+        </section>
+
+        <!-- Tab: Sector ETFs -->
+        <section id="tab-sectors" class="tab-content">
+            <h2>S&P 500 Sector ETFs</h2>
+            <div id="chart-sectors" class="chart-container"></div>
+            <h3>Retornos por Setor</h3>
+            <div id="chart-sector-bars" class="chart-container"></div>
+            <div id="table-sector-returns" class="table-container"></div>
+        </section>
+
+        <!-- Tab: Fundamentals -->
+        <section id="tab-fundamentals" class="tab-content">
+            <h2>Fundamentals - Receita, EBIT, EBITDA & Earnings</h2>
+            <div class="controls">
+                <label>Grupo:
+                    <select id="fund-group" onchange="renderFundamentals()">
+                        <option value="mag7">Mag7</option>
+                    </select>
+                </label>
+                <label>Metrica:
+                    <select id="fund-metric" onchange="renderFundamentals()">
+                        <option value="revenue">Revenue</option>
+                        <option value="ebit">EBIT</option>
+                        <option value="ebitda">EBITDA</option>
+                        <option value="net_income">Net Income</option>
+                    </select>
+                </label>
+                <label>Visualizacao:
+                    <select id="fund-view" onchange="renderFundamentals()">
+                        <option value="absolute">Valores Absolutos (USD B)</option>
+                        <option value="growth">Crescimento YoY %</option>
+                    </select>
+                </label>
+            </div>
+            <div id="chart-fundamentals" class="chart-container"></div>
+            <div id="table-fundamentals" class="table-container"></div>
+        </section>
+
+        <!-- Tab: Valuation -->
+        <section id="tab-valuation" class="tab-content">
+            <h2>Metricas de Valuation</h2>
+            <div class="controls">
+                <label>Grupo:
+                    <select id="val-group" onchange="renderValuation()">
+                        <option value="mag7">Mag7</option>
+                        <option value="sectors">Sector ETFs</option>
+                    </select>
+                </label>
+            </div>
+            <div id="table-valuation" class="table-container"></div>
+        </section>
+    </main>
+
+    <footer>
+        <p>Data source: Yahoo Finance | S&P 493 is an approximation (S&P 500 minus ~30% Mag7 contribution).</p>
+        <p>For institutional-grade data, consider Bloomberg Terminal API.</p>
+    </footer>
+
+    <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="spinner"></div>
+        <p id="loading-text">Carregando dados...</p>
+    </div>
+
+    <script src="js/app.js"></script>
+</body>
+</html>
