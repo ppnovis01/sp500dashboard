@@ -3,6 +3,13 @@
 // ============================================================
 
 const MAG7 = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"];
+
+// Approximate market caps in USD billions (used for cap-weighted Mag7 index)
+const MAG7_MKTCAP = {
+    AAPL: 3400, MSFT: 3100, GOOGL: 2300, AMZN: 2200,
+    NVDA: 3300, META: 1600, TSLA: 1100,
+};
+
 const SECTOR_ETFS = {
     XLK: "Technology", XLF: "Financials", XLC: "Communication Svcs",
     XLY: "Consumer Disc.", XLV: "Health Care", XLI: "Industrials",
@@ -11,15 +18,24 @@ const SECTOR_ETFS = {
 };
 const INDEX_MAP = { "^GSPC": "S&P 500", RSP: "S&P 500 Equal Weight" };
 
+// Estimated Mag7 combined weight in S&P 500 at various start dates.
+// This is the INITIAL weight (w0) - their weight grows naturally as they outperform.
+// Sources: S&P Dow Jones Indices, various analyst reports.
+const MAG7_INITIAL_WEIGHT = {
+    2015: 0.11, 2016: 0.12, 2017: 0.14, 2018: 0.15, 2019: 0.16,
+    2020: 0.18, 2021: 0.23, 2022: 0.20, 2023: 0.22, 2024: 0.28,
+    2025: 0.30, 2026: 0.31,
+};
+
 const PLOTLY_LAYOUT = {
     paper_bgcolor: "rgba(0,0,0,0)",
     plot_bgcolor: "rgba(0,0,0,0)",
     font: { color: "#fafafa", size: 12 },
-    margin: { t: 40, r: 20, b: 50, l: 60 },
-    legend: { orientation: "h", y: 1.12, x: 0.5, xanchor: "center" },
+    margin: { t: 10, r: 20, b: 50, l: 60 },
+    legend: { orientation: "h", y: -0.15, x: 0.5, xanchor: "center", font: { size: 11 } },
     xaxis: { gridcolor: "#363948", linecolor: "#363948" },
     yaxis: { gridcolor: "#363948", linecolor: "#363948" },
-    height: 480,
+    height: 500,
 };
 
 const PLOTLY_CONFIG = { responsive: true, displayModeBar: false };
@@ -36,14 +52,12 @@ const PROXIES = [
 ];
 
 async function fetchWithProxy(url) {
-    // Try direct first (works in some environments)
     for (const makeProxy of [null, ...PROXIES]) {
         try {
             const fetchUrl = makeProxy ? makeProxy(url) : url;
             const resp = await fetch(fetchUrl, { signal: AbortSignal.timeout(12000) });
             if (resp.ok) {
-                const data = await resp.json();
-                return data;
+                return await resp.json();
             }
         } catch (e) {
             continue;
@@ -52,12 +66,64 @@ async function fetchWithProxy(url) {
     return null;
 }
 
+// --- Date range helpers ---
+function getDateRange() {
+    const startEl = document.getElementById("date-start");
+    const endEl = document.getElementById("date-end");
+    return { start: startEl.value, end: endEl.value };
+}
+
+function setDateRange(startStr, endStr) {
+    document.getElementById("date-start").value = startStr;
+    document.getElementById("date-end").value = endStr;
+}
+
+function initDateDefaults() {
+    const today = new Date();
+    const endStr = today.toISOString().slice(0, 10);
+    const start = new Date(today);
+    start.setFullYear(start.getFullYear() - 5);
+    const startStr = start.toISOString().slice(0, 10);
+    setDateRange(startStr, endStr);
+}
+
+function onShortcutChange() {
+    const val = document.getElementById("period-shortcut").value;
+    if (!val) return;
+    const today = new Date();
+    const endStr = today.toISOString().slice(0, 10);
+    const start = new Date(today);
+    if (val === "ytd") {
+        start.setMonth(0, 1);
+    } else {
+        const years = parseInt(val);
+        start.setFullYear(start.getFullYear() - years);
+    }
+    setDateRange(start.toISOString().slice(0, 10), endStr);
+    priceCache = {};
+    loadCurrentTab();
+}
+
+function onDateChange() {
+    document.getElementById("period-shortcut").value = "";
+    priceCache = {};
+    loadCurrentTab();
+}
+
+function getDateLabel() {
+    const { start, end } = getDateRange();
+    return `${start} a ${end}`;
+}
+
 // --- Yahoo Finance Data Fetching ---
-async function fetchYahooChart(symbol, range = "5y", interval = "1d") {
-    const cacheKey = `${symbol}_${range}_${interval}`;
+async function fetchYahooChart(symbol) {
+    const { start, end } = getDateRange();
+    const cacheKey = `${symbol}_${start}_${end}`;
     if (priceCache[cacheKey]) return priceCache[cacheKey];
 
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=${range}&interval=${interval}&includePrePost=false`;
+    const period1 = Math.floor(new Date(start).getTime() / 1000);
+    const period2 = Math.floor(new Date(end + "T23:59:59").getTime() / 1000);
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?period1=${period1}&period2=${period2}&interval=1d&includePrePost=false`;
     const data = await fetchWithProxy(url);
 
     if (data?.chart?.result?.[0]) {
@@ -72,10 +138,8 @@ async function fetchYahooChart(symbol, range = "5y", interval = "1d") {
     return null;
 }
 
-async function fetchMultiple(symbols, range) {
-    const results = await Promise.allSettled(
-        symbols.map((s) => fetchYahooChart(s, range))
-    );
+async function fetchMultiple(symbols) {
+    const results = await Promise.allSettled(symbols.map((s) => fetchYahooChart(s)));
     const out = {};
     results.forEach((r, i) => {
         if (r.status === "fulfilled" && r.value) {
@@ -90,6 +154,66 @@ function normalize(data) {
     const firstValid = data.closes.find((v) => v != null);
     if (!firstValid) return [];
     return data.closes.map((v) => (v != null ? (v / firstValid) * 100 : null));
+}
+
+// --- S&P 493 Calculation ---
+// Computes a cap-weighted Mag7 index, then removes its contribution from S&P 500
+// using the estimated initial weight at the start date.
+function computeCapWeightedMag7(mag7Data) {
+    // Get relative weights from market caps
+    const available = MAG7.filter((t) => mag7Data[t]);
+    if (available.length === 0) return null;
+
+    const totalCap = available.reduce((s, t) => s + MAG7_MKTCAP[t], 0);
+    const weights = {};
+    available.forEach((t) => { weights[t] = MAG7_MKTCAP[t] / totalCap; });
+
+    // Normalize each stock's prices, then compute weighted average
+    const refDates = mag7Data[available[0]].dates;
+    const n = refDates.length;
+    const weightedIndex = new Array(n).fill(null);
+
+    for (let i = 0; i < n; i++) {
+        let val = 0;
+        let wSum = 0;
+        for (const t of available) {
+            const norm = normalize(mag7Data[t]);
+            if (norm[i] != null) {
+                val += weights[t] * norm[i];
+                wSum += weights[t];
+            }
+        }
+        weightedIndex[i] = wSum > 0 ? val / wSum : null;
+    }
+    return { dates: refDates, values: weightedIndex };
+}
+
+function getInitialWeight(startDate) {
+    const year = new Date(startDate).getFullYear();
+    // Find closest year in our weight table
+    const years = Object.keys(MAG7_INITIAL_WEIGHT).map(Number).sort();
+    let w = MAG7_INITIAL_WEIGHT[years[0]];
+    for (const y of years) {
+        if (y <= year) w = MAG7_INITIAL_WEIGHT[y];
+    }
+    return w;
+}
+
+function computeSP493(sp500Norm, mag7CapWeighted, startDate) {
+    // S&P 493 = (SP500_norm - w0 * Mag7_capweighted_norm) / (1 - w0)
+    // w0 = Mag7 weight at the START date (not current weight)
+    const w0 = getInitialWeight(startDate);
+    const sp493 = sp500Norm.map((v, i) => {
+        if (v == null || mag7CapWeighted[i] == null) return null;
+        return (v - w0 * mag7CapWeighted[i]) / (1 - w0);
+    });
+    // Re-normalize to base 100
+    const first = sp493.find((v) => v != null);
+    if (!first) return { values: sp493, w0 };
+    return {
+        values: sp493.map((v) => (v != null ? (v / first) * 100 : null)),
+        w0,
+    };
 }
 
 // --- Sample/Fallback Fundamentals Data ---
@@ -178,18 +302,6 @@ function switchTab(tab) {
 }
 
 // ============================================================
-// Period change
-// ============================================================
-function onPeriodChange() {
-    priceCache = {};
-    loadCurrentTab();
-}
-
-function getSelectedPeriod() {
-    return document.getElementById("period-select").value;
-}
-
-// ============================================================
 // Loading
 // ============================================================
 function showLoading(text = "Carregando dados...") {
@@ -218,16 +330,15 @@ function setLastUpdated() {
 function makeLineChart(divId, traces, title, yTitle = "Value") {
     const layout = {
         ...PLOTLY_LAYOUT,
-        title: { text: title, font: { size: 14 } },
         yaxis: { ...PLOTLY_LAYOUT.yaxis, title: yTitle },
     };
+    // Title is handled by the h2/h3 in HTML, not inside the chart
     Plotly.newPlot(divId, traces, layout, PLOTLY_CONFIG);
 }
 
 function makeBarChart(divId, traces, title, yTitle = "Value") {
     const layout = {
         ...PLOTLY_LAYOUT,
-        title: { text: title, font: { size: 14 } },
         yaxis: { ...PLOTLY_LAYOUT.yaxis, title: yTitle },
         barmode: "group",
     };
@@ -266,17 +377,15 @@ function calcReturn(closes) {
 // TAB 1: Index Comparison
 // ============================================================
 async function loadIndices() {
-    const period = getSelectedPeriod();
-
     const [indexData, mag7Data] = await Promise.all([
-        fetchMultiple(["^GSPC", "RSP"], period),
-        fetchMultiple(MAG7, period),
+        fetchMultiple(["^GSPC", "RSP"]),
+        fetchMultiple(MAG7),
     ]);
 
     const hasLiveData = Object.keys(indexData).length > 0;
 
     if (!hasLiveData) {
-        setStatus("error", "API indisponivel - dados demonstrativos");
+        setStatus("error", "API indisponivel");
         document.getElementById("chart-indices").innerHTML =
             '<p style="padding:40px;text-align:center;color:#a0a4b0;">Nao foi possivel carregar dados de preco. Verifique sua conexao ou tente novamente.</p>';
         return;
@@ -286,6 +395,7 @@ async function loadIndices() {
     setStatus("live", "Dados ao vivo");
 
     const traces = [];
+    const dateLabel = getDateLabel();
 
     // S&P 500
     if (indexData["^GSPC"]) {
@@ -299,52 +409,36 @@ async function loadIndices() {
         traces.push({ x: indexData["RSP"].dates, y: norm, name: "S&P 500 Equal Weight", type: "scatter", mode: "lines" });
     }
 
-    // Mag7 average
+    // Mag7 cap-weighted
     if (Object.keys(mag7Data).length > 0) {
-        const firstTicker = Object.values(mag7Data)[0];
-        const n = firstTicker.dates.length;
-        const mag7Avg = new Array(n).fill(0);
-        const mag7Count = new Array(n).fill(0);
+        const mag7CW = computeCapWeightedMag7(mag7Data);
 
-        Object.values(mag7Data).forEach((d) => {
-            const norm = normalize(d);
-            norm.forEach((v, i) => {
-                if (v != null) {
-                    mag7Avg[i] += v;
-                    mag7Count[i]++;
-                }
-            });
-        });
-
-        const mag7NormAvg = mag7Avg.map((v, i) => (mag7Count[i] > 0 ? v / mag7Count[i] : null));
-        traces.push({
-            x: firstTicker.dates, y: mag7NormAvg,
-            name: "Mag7 (avg)", type: "scatter", mode: "lines",
-            line: { width: 3 },
-        });
-
-        // S&P 493 approximation
-        if (indexData["^GSPC"]) {
-            const sp500Norm = normalize(indexData["^GSPC"]);
-            const sp493 = sp500Norm.map((v, i) => {
-                if (v == null || mag7NormAvg[i] == null) return null;
-                return (v - 0.30 * mag7NormAvg[i]) / 0.70;
-            });
-            // Re-normalize to 100
-            const first493 = sp493.find((v) => v != null);
-            const sp493Renorm = sp493.map((v) => (v != null ? (v / first493) * 100 : null));
+        if (mag7CW) {
             traces.push({
-                x: indexData["^GSPC"].dates, y: sp493Renorm,
-                name: "S&P 493 (approx)", type: "scatter", mode: "lines",
-                line: { dash: "dot" },
+                x: mag7CW.dates, y: mag7CW.values,
+                name: "Mag7 (cap-weighted)", type: "scatter", mode: "lines",
+                line: { width: 3 },
             });
+
+            // S&P 493 approximation
+            if (indexData["^GSPC"]) {
+                const sp500Norm = normalize(indexData["^GSPC"]);
+                const { start } = getDateRange();
+                const { values: sp493Values, w0 } = computeSP493(sp500Norm, mag7CW.values, start);
+                traces.push({
+                    x: indexData["^GSPC"].dates, y: sp493Values,
+                    name: `S&P 493 (approx, w0=${(w0 * 100).toFixed(0)}%)`,
+                    type: "scatter", mode: "lines",
+                    line: { dash: "dot" },
+                });
+            }
         }
     }
 
-    makeLineChart("chart-indices", traces, "Performance Normalizada (Base = 100)", "Indice");
+    makeLineChart("chart-indices", traces, "", "Indice (Base=100)");
 
     // Returns table
-    const headers = ["Index", `Retorno Total (${period})`];
+    const headers = ["Index", `Retorno Total (${dateLabel})`];
     const rows = [];
     for (const t of traces) {
         const closes = t.y.filter((v) => v != null);
@@ -360,8 +454,7 @@ async function loadIndices() {
 // TAB 2: Mag7
 // ============================================================
 async function loadMag7() {
-    const period = getSelectedPeriod();
-    const mag7Data = await fetchMultiple(MAG7, period);
+    const mag7Data = await fetchMultiple(MAG7);
 
     if (Object.keys(mag7Data).length === 0) {
         document.getElementById("chart-mag7").innerHTML =
@@ -374,10 +467,10 @@ async function loadMag7() {
         name: symbol, type: "scatter", mode: "lines",
     }));
 
-    makeLineChart("chart-mag7", traces, "Mag7 - Performance Normalizada (Base = 100)", "Preco (normalizado)");
+    makeLineChart("chart-mag7", traces, "", "Preco (Base=100)");
 
-    // Returns table
-    const headers = ["Ticker", `Retorno Total (${period}) %`, "Preco Atual"];
+    const dateLabel = getDateLabel();
+    const headers = ["Ticker", `Retorno Total %`, "Preco Atual"];
     const rows = Object.entries(mag7Data).map(([symbol, d]) => {
         const ret = calcReturn(d.closes);
         const lastPrice = [...d.closes].reverse().find((v) => v != null);
@@ -390,9 +483,8 @@ async function loadMag7() {
 // TAB 3: Sectors
 // ============================================================
 async function loadSectors() {
-    const period = getSelectedPeriod();
     const etfSymbols = Object.keys(SECTOR_ETFS);
-    const etfData = await fetchMultiple(etfSymbols, period);
+    const etfData = await fetchMultiple(etfSymbols);
 
     if (Object.keys(etfData).length === 0) {
         document.getElementById("chart-sectors").innerHTML =
@@ -405,9 +497,9 @@ async function loadSectors() {
         name: `${symbol} (${SECTOR_ETFS[symbol]})`, type: "scatter", mode: "lines",
     }));
 
-    makeLineChart("chart-sectors", traces, "Sector ETFs - Performance Normalizada", "Indice");
+    makeLineChart("chart-sectors", traces, "", "Indice (Base=100)");
 
-    // Returns bar chart
+    const dateLabel = getDateLabel();
     const returnData = Object.entries(etfData)
         .map(([symbol, d]) => ({ symbol, label: `${symbol}`, ret: calcReturn(d.closes) }))
         .filter((r) => r.ret != null)
@@ -422,10 +514,9 @@ async function loadSectors() {
         },
     };
 
-    makeBarChart("chart-sector-bars", [barTrace], `Retornos por Setor (${period})`, "Retorno %");
+    makeBarChart("chart-sector-bars", [barTrace], "", "Retorno %");
 
-    // Table
-    const headers = ["Setor", "ETF", `Retorno (${period}) %`];
+    const headers = ["Setor", "ETF", `Retorno %`];
     const rows = returnData.map((r) => [SECTOR_ETFS[r.symbol] || r.symbol, r.symbol, r.ret]);
     document.getElementById("table-sector-returns").innerHTML = buildTable(headers, rows);
 }
@@ -446,7 +537,7 @@ function renderFundamentals() {
             y: FUNDAMENTALS[t][metric],
             name: t, type: "bar",
         }));
-        makeBarChart("chart-fundamentals", traces, `${metricLabels[metric]} (USD Bilhoes)`, "USD (B)");
+        makeBarChart("chart-fundamentals", traces, "", "USD (B)");
 
         const headers = ["Ano", ...tickers];
         const rows = FUNDAMENTALS[tickers[0]].years.map((year, i) => [
@@ -455,7 +546,6 @@ function renderFundamentals() {
         ]);
         document.getElementById("table-fundamentals").innerHTML = buildTable(headers, rows);
     } else {
-        // YoY Growth
         const traces = tickers.map((t) => {
             const vals = FUNDAMENTALS[t][metric];
             const growth = vals.map((v, i) => (i === 0 ? null : ((v - vals[i - 1]) / Math.abs(vals[i - 1])) * 100));
@@ -465,7 +555,7 @@ function renderFundamentals() {
                 name: t, type: "bar",
             };
         });
-        makeBarChart("chart-fundamentals", traces, `${metricLabels[metric]} - Crescimento YoY (%)`, "Crescimento %");
+        makeBarChart("chart-fundamentals", traces, "", "Crescimento %");
 
         const headers = ["Ano", ...tickers];
         const years = FUNDAMENTALS[tickers[0]].years.slice(1);
@@ -526,7 +616,6 @@ async function refreshAllData() {
 
     showLoading("Atualizando todos os dados...");
     try {
-        // Load all tabs data
         await loadIndices();
         await loadMag7();
         await loadSectors();
@@ -553,5 +642,6 @@ window.switchTab = function (tab) {
 // Init
 // ============================================================
 document.addEventListener("DOMContentLoaded", () => {
+    initDateDefaults();
     loadCurrentTab();
 });

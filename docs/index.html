@@ -32,13 +32,21 @@
 
     <main>
         <div class="controls">
-            <label>Periodo:
-                <select id="period-select" onchange="onPeriodChange()">
+            <label>Data Inicio:
+                <input type="date" id="date-start" onchange="onDateChange()">
+            </label>
+            <label>Data Fim:
+                <input type="date" id="date-end" onchange="onDateChange()">
+            </label>
+            <label>Atalhos:
+                <select id="period-shortcut" onchange="onShortcutChange()">
+                    <option value="">Custom</option>
                     <option value="1y">1 Ano</option>
                     <option value="2y">2 Anos</option>
                     <option value="3y">3 Anos</option>
                     <option value="5y" selected>5 Anos</option>
                     <option value="10y">10 Anos</option>
+                    <option value="ytd">YTD</option>
                 </select>
             </label>
         </div>
@@ -110,7 +118,7 @@
     </main>
 
     <footer>
-        <p>Data source: Yahoo Finance | S&P 493 is an approximation (S&P 500 minus ~30% Mag7 contribution).</p>
+        <p>Data source: Yahoo Finance | S&P 493 approximation: removes cap-weighted Mag7 contribution using estimated initial weight at start date.</p>
         <p>For institutional-grade data, consider Bloomberg Terminal API.</p>
     </footer>
 

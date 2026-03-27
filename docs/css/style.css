@@ -157,7 +157,8 @@ main {
     gap: 8px;
 }
 
-.controls select {
+.controls select,
+.controls input[type="date"] {
     background: var(--bg-card);
     color: var(--text-primary);
     border: 1px solid var(--border);
@@ -165,6 +166,10 @@ main {
     border-radius: var(--radius);
     font-size: 0.85rem;
     cursor: pointer;
+}
+
+.controls input[type="date"]::-webkit-calendar-picker-indicator {
+    filter: invert(0.8);
 }
 
 .tab-content {
